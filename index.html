@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>سيد Ai</title>
+<style>
+  :root { --bg:#0f1117; --card:#1a1d27; --me:#2d5bff; --bot:#232736; --text:#eef0f6; --muted:#8b90a3; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body { background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; background:var(--card); border-bottom:1px solid #2a2e3d; }
+  header h1 { margin:0; font-size:20px; }
+  header h1 span { color:var(--me); }
+  .btns button { background:none; border:1px solid #333950; color:var(--muted); border-radius:8px; padding:6px 10px; margin-inline-start:6px; font-size:13px; }
+  #chat { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width:85%; padding:10px 14px; border-radius:16px; line-height:1.7; white-space:pre-wrap; word-wrap:break-word; font-size:15px; }
+  .me { align-self:flex-start; background:var(--me); border-bottom-right-radius:4px; }
+  .bot { align-self:flex-end; background:var(--bot); border-bottom-left-radius:4px; }
+  .sys { align-self:center; color:var(--muted); font-size:13px; }
+  form { display:flex; gap:8px; padding:12px; background:var(--card); border-top:1px solid #2a2e3d; }
+  textarea { flex:1; resize:none; background:var(--bg); color:var(--text); border:1px solid #333950; border-radius:12px; padding:10px 12px; font-size:16px; font-family:inherit; max-height:120px; }
+  textarea:focus { outline:1px solid var(--me); }
+  #send { background:var(--me); color:#fff; border:none; border-radius:12px; padding:0 18px; font-size:15px; }
+  #send:disabled { opacity:.5; }
+</style>
+</head>
+<body>
+<header>
+  <h1>سيد <span>Ai</span></h1>
+  <div class="btns">
+    <button id="keyBtn" type="button">🔑 المفتاح</button>
+    <button id="clearBtn" type="button">🗑 مسح</button>
+  </div>
+</header>
+
+<div id="chat"></div>
+
+<form id="form">
+  <textarea id="input" rows="1" placeholder="اكتب رسالتك هنا..."></textarea>
+  <button id="send" type="submit">إرسال</button>
+</form>
+
+<script>
+  // إذا اسم الموديل ما اشتغل، غيّره (مثلاً gemini-3.5-flash-lite-lite)
+  const MODEL = "gemini-3.5-flash-lite";
+
+  const chat = document.getElementById("chat");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+  const sendBtn = document.getElementById("send");
+  let history = [];
+
+  function getKey() { try { return localStorage.getItem("gemini_key") || ""; } catch(e) { return window._k || ""; } }
+  function setKey(k) { try { localStorage.setItem("gemini_key", k); } catch(e) { window._k = k; } }
+
+  function add(text, cls) {
+    const d = document.createElement("div");
+    d.className = "msg " + cls;
+    d.textContent = text;
+    chat.appendChild(d);
+    chat.scrollTop = chat.scrollHeight;
+    return d;
+  }
+
+  function askKey() {
+    const k = prompt("الصق مفتاح Gemini API هنا (من aistudio.google.com):", getKey());
+    if (k !== null && k.trim()) { setKey(k.trim()); add("تم حفظ المفتاح ✅", "sys"); }
+  }
+
+  document.getElementById("keyBtn").onclick = askKey;
+  document.getElementById("clearBtn").onclick = () => { history = []; chat.innerHTML = ""; add("تم مسح المحادثة", "sys"); };
+
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = input.scrollHeight + "px"; });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    if (!getKey()) { askKey(); if (!getKey()) return; }
+
+    add(text, "me");
+    input.value = ""; input.style.height = "auto";
+    history.push({ role: "user", parts: [{ text }] });
+    sendBtn.disabled = true;
+    const wait = add("يكتب...", "bot");
+
+    try {
+      const res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": getKey() },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: "أنت سيد Ai، مساعد ذكي ودود. أجب بالعربية بوضوح وبساطة ما لم يطلب المستخدم لغة أخرى." }] },
+            contents: history
+          })
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error((data.error && data.error.message) || "خطأ غير معروف");
+      const reply = data.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "ما وصلني رد.";
+      wait.textContent = reply;
+      history.push({ role: "model", parts: [{ text: reply }] });
+    } catch (err) {
+      wait.textContent = "⚠️ صار خطأ: " + err.message;
+      history.pop();
+    }
+    sendBtn.disabled = false;
+    chat.scrollTop = chat.scrollHeight;
+  });
+
+  add("هلا بيك! أني سيد Ai 👋 اضغط 🔑 المفتاح أول مرة وحط مفتاح Gemini.", "sys");
+</script>
+</body>
+</html>
