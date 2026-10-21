@@ -15,12 +15,22 @@
   .btns button { background:none; border:1px solid #333950; color:var(--muted); border-radius:8px; padding:6px 10px; margin-inline-start:6px; font-size:13px; }
   #chat { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
   .msg { max-width:85%; padding:10px 14px; border-radius:16px; line-height:1.7; white-space:pre-wrap; word-wrap:break-word; font-size:15px; }
+  .msg img { display:block; max-width:100%; max-height:260px; border-radius:10px; margin-bottom:8px; }
   .me { align-self:flex-start; background:var(--me); border-bottom-right-radius:4px; }
   .bot { align-self:flex-end; background:var(--bot); border-bottom-left-radius:4px; }
   .sys { align-self:center; color:var(--muted); font-size:13px; }
-  form { display:flex; gap:8px; padding:12px; background:var(--card); border-top:1px solid #2a2e3d; }
+  #preview { display:none; padding:8px 12px 0; background:var(--card); border-top:1px solid #2a2e3d; }
+  #preview .box { position:relative; display:inline-block; }
+  #preview img { height:80px; border-radius:10px; display:block; }
+  #preview button { position:absolute; top:-6px; left:-6px; width:24px; height:24px; border-radius:50%; border:none; background:#e5484d; color:#fff; font-size:14px; line-height:24px; padding:0; }
+  form { display:flex; gap:8px; padding:12px; background:var(--card); }
+  #preview.show + form { border-top:none; }
+  form { border-top:1px solid #2a2e3d; }
+  #preview.show { display:block; }
+  #preview.show ~ form { border-top:none; }
   textarea { flex:1; resize:none; background:var(--bg); color:var(--text); border:1px solid #333950; border-radius:12px; padding:10px 12px; font-size:16px; font-family:inherit; max-height:120px; }
   textarea:focus { outline:1px solid var(--me); }
+  #attach { background:var(--bg); color:var(--muted); border:1px solid #333950; border-radius:12px; width:46px; font-size:20px; }
   #send { background:var(--me); color:#fff; border:none; border-radius:12px; padding:0 18px; font-size:15px; }
   #send:disabled { opacity:.5; }
 </style>
@@ -36,31 +46,48 @@
 
 <div id="chat"></div>
 
+<div id="preview"><div class="box"><img id="previewImg" alt=""><button id="removeImg" type="button">×</button></div></div>
+
 <form id="form">
+  <input type="file" id="file" accept="image/*" hidden>
+  <button id="attach" type="button" title="إرفاق صورة">📎</button>
   <textarea id="input" rows="1" placeholder="اكتب رسالتك هنا..."></textarea>
   <button id="send" type="submit">إرسال</button>
 </form>
 
 <script>
-  // إذا اسم الموديل ما اشتغل، غيّره (مثلاً gemini-3.5-flash-lite-lite)
-  const MODEL = "gemini-3.5-flash-lite";
+  // إذا اسم الموديل ما اشتغل، غيّره (مثلاً gemini-3.5-flash-lite)
+  const MODEL = "gemini-3.8-flash";
 
   const chat = document.getElementById("chat");
   const form = document.getElementById("form");
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("send");
+  const fileInput = document.getElementById("file");
+  const preview = document.getElementById("preview");
+  const previewImg = document.getElementById("previewImg");
   let history = [];
+  let pendingImage = null; // { mime, data (base64), url }
 
   function getKey() { try { return localStorage.getItem("gemini_key") || ""; } catch(e) { return window._k || ""; } }
   function setKey(k) { try { localStorage.setItem("gemini_key", k); } catch(e) { window._k = k; } }
 
-  function add(text, cls) {
+  function add(text, cls, imgUrl) {
     const d = document.createElement("div");
     d.className = "msg " + cls;
-    d.textContent = text;
+    if (imgUrl) {
+      const im = document.createElement("img");
+      im.src = imgUrl;
+      d.appendChild(im);
+    }
+    if (text) d.appendChild(document.createTextNode(text));
     chat.appendChild(d);
     chat.scrollTop = chat.scrollHeight;
     return d;
+  }
+
+  function setBotText(el, text) {
+    el.textContent = text;
   }
 
   function askKey() {
@@ -68,20 +95,76 @@
     if (k !== null && k.trim()) { setKey(k.trim()); add("تم حفظ المفتاح ✅", "sys"); }
   }
 
+  // تصغير الصورة قبل الإرسال حتى ما تثقل الطلب
+  function shrinkImage(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("ما قدرت أقرأ الصورة"));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error("الملف مو صورة صالحة"));
+        img.onload = () => {
+          const MAX = 1280;
+          let w = img.width, h = img.height;
+          if (Math.max(w, h) > MAX) {
+            const s = MAX / Math.max(w, h);
+            w = Math.round(w * s); h = Math.round(h * s);
+          }
+          const c = document.createElement("canvas");
+          c.width = w; c.height = h;
+          c.getContext("2d").drawImage(img, 0, 0, w, h);
+          const url = c.toDataURL("image/jpeg", 0.85);
+          resolve({ mime: "image/jpeg", data: url.split(",")[1], url });
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function clearPending() {
+    pendingImage = null;
+    fileInput.value = "";
+    previewImg.src = "";
+    preview.classList.remove("show");
+  }
+
+  document.getElementById("attach").onclick = () => fileInput.click();
+  document.getElementById("removeImg").onclick = clearPending;
+
+  fileInput.addEventListener("change", async () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    try {
+      pendingImage = await shrinkImage(f);
+      previewImg.src = pendingImage.url;
+      preview.classList.add("show");
+    } catch (err) {
+      add("⚠️ " + err.message, "sys");
+      clearPending();
+    }
+  });
+
   document.getElementById("keyBtn").onclick = askKey;
-  document.getElementById("clearBtn").onclick = () => { history = []; chat.innerHTML = ""; add("تم مسح المحادثة", "sys"); };
+  document.getElementById("clearBtn").onclick = () => { history = []; chat.innerHTML = ""; clearPending(); add("تم مسح المحادثة", "sys"); };
 
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = input.scrollHeight + "px"; });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && !pendingImage) return;
     if (!getKey()) { askKey(); if (!getKey()) return; }
 
-    add(text, "me");
+    const parts = [];
+    if (pendingImage) parts.push({ inlineData: { mimeType: pendingImage.mime, data: pendingImage.data } });
+    parts.push({ text: text || "اشرح لي هذه الصورة." });
+
+    add(text, "me", pendingImage ? pendingImage.url : null);
     input.value = ""; input.style.height = "auto";
-    history.push({ role: "user", parts: [{ text }] });
+    clearPending();
+
+    history.push({ role: "user", parts });
     sendBtn.disabled = true;
     const wait = add("يكتب...", "bot");
 
@@ -99,18 +182,18 @@
       );
       const data = await res.json();
       if (!res.ok) throw new Error((data.error && data.error.message) || "خطأ غير معروف");
-      const reply = data.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "ما وصلني رد.";
-      wait.textContent = reply;
+      const reply = data.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("") || "ما وصلني رد.";
+      setBotText(wait, reply);
       history.push({ role: "model", parts: [{ text: reply }] });
     } catch (err) {
-      wait.textContent = "⚠️ صار خطأ: " + err.message;
+      setBotText(wait, "⚠️ صار خطأ: " + err.message);
       history.pop();
     }
     sendBtn.disabled = false;
     chat.scrollTop = chat.scrollHeight;
   });
 
-  add("هلا بيك! أني سيد Ai 👋 اضغط 🔑 المفتاح أول مرة وحط مفتاح Gemini.", "sys");
+  add("هلا بيك! أني سيد Ai 👋 اضغط 🔑 المفتاح أول مرة وحط مفتاح Gemini. تكدر ترسل صورة بزر 📎", "sys");
 </script>
 </body>
 </html>
